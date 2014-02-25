@@ -186,7 +186,7 @@ static int rloop_read(const char *path, char *buf, size_t size, off_t offset,
                 if (start_cluster + i < fat.size()) {
                     fat_ent &fent = fat[start_cluster + i];
                     if (fent.cluster < fent.ent->num_clusters_ - 1) {
-                        value = 2 + start_cluster + i + 1;
+                        value = 2 + start_cluster + i/fat_ent_size + 1;
                     } else if (fent.cluster == fent.ent->num_clusters_ - 1) {
                         value = fat32 ? 0x0fffffff : 0xffff;
                     } else {
@@ -197,15 +197,16 @@ static int rloop_read(const char *path, char *buf, size_t size, off_t offset,
                     value = 0;
                 }
                 uint8_t j = 0;
+                uint8_t lim = fat_ent_size - i % fat_ent_size;
                 // Nasty...
                 if (fat32) {
                     uint32_t temp = htole32(value);
-                    for (; j < 4 && i + j < chunk_size; j++) {
+                    for (; j < lim && i + j < chunk_size; j++) {
                         buf[i + j] = ((uint8_t *)&temp)[j];
                     }
                 } else {
                     uint16_t temp = htole16(value);
-                    for (; j < 2 && i + j < chunk_size; j++) {
+                    for (; j < lim && i + j < chunk_size; j++) {
                         buf[i + j] = ((uint8_t *)&temp)[j];
                     }
                 }
