@@ -61,6 +61,7 @@ uint32_t fat_size;
 uint32_t fat_sectors;
 uint32_t data_sectors;
 uint32_t data_clusters;
+uint32_t root_dir_start_sector;
 uint32_t data_start_sector;
 
 static int rloop_getattr(const char *path, struct stat* stbuf)
@@ -113,8 +114,53 @@ static int rloop_open(const char *path, struct fuse_file_info *fi)
 static int rloop_read(const char *path, char *buf, size_t size, off_t offset,
                       struct fuse_file_info *fi)
 {
+    if (0 != strcmp(path, image_filename.c_str())) {
+        return -ENOENT;
+    }
+
+    if ((uint64_t) offset >= image_size) {
+        size = 0;
+    } else if ((uint64_t) offset + size > image_size) {
+        size = image_size - offset;
+    }
+
     uint32_t sector = offset / 512;
-    return -ENOSYS;
+    uint16_t chunk_size, chunk_offset;
+    size_t done_size = 0;
+    while (size > 0) {
+        chunk_offset = offset % 512;
+        chunk_size = 512 - chunk_offset;
+        if (size < chunk_size) {
+            chunk_size = size;
+        }
+
+        if (sector >= data_start_sector) {
+            // data sector
+            memset(buf, 0, chunk_size);
+        } else if (sector >= res_sectors && sector < root_dir_start_sector) {
+            // FAT sector
+            memset(buf, 0, chunk_size);
+        } else if (sector >= root_dir_start_sector) {
+            // root directory sector (FAT16 only)
+            memset(buf, 0, chunk_size);
+        } else {
+            // reserved sector
+            if (sector == 0 || sector == 6) {
+                // boot sector
+                memcpy(buf, &bootsect[chunk_offset], chunk_size);
+            } else {
+                memset(buf, 0, chunk_size);
+            }
+        }
+
+        done_size += chunk_size;
+        buf += chunk_size;
+        offset += chunk_size;
+        size -= chunk_size;
+        sector++;
+    }
+
+    return done_size;
 }
 
 static int rloop_write(const char *path, const char *buf, size_t size,
@@ -160,7 +206,8 @@ void setup_params()
     data_sectors = free_sectors - 2 * fat_sectors;
     data_clusters = data_sectors / cluster_sectors;
 
-    data_start_sector = res_sectors + 2 * fat_sectors + root_dir_sectors;
+    root_dir_start_sector = res_sectors + 2 * fat_sectors;
+    data_start_sector = root_dir_start_sector + root_dir_sectors;
 
     printf("FAT%d, %u reserved sectors, %u sectors per FAT (%u entries), %u sectors for root directory, %llu sectors total\n", fat32 ? 32 : 16, res_sectors, fat_sectors, free_clusters, root_dir_sectors, num_sectors);
     printf("%u data sectors, %u data clusters\n", data_sectors, data_clusters);
