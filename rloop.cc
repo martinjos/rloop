@@ -89,6 +89,17 @@ struct dir_ent : public file_ent {
     }
 };
 
+struct fat_ent {
+    file_ent *ent;
+    uint32_t sector;
+    fat_ent(file_ent *ent, uint32_t sector)
+    : ent(ent), sector(sector) {
+    }
+};
+
+dir_ent* root = NULL;
+vector<fat_ent> fat;
+
 static int rloop_getattr(const char *path, struct stat* stbuf)
 {
     int res = 0;
@@ -293,6 +304,9 @@ void allocate_fat(file_ent *ent) {
     if (fat32 || !ent->is_root()) {
         if (ent->num_clusters_ != 0) {
             ent->start_cluster_ = next_cluster;
+            for (uint32_t i = 0; i < ent->num_clusters_; i++) {
+                fat.push_back(fat_ent(ent, i));
+            }
         } else {
             ent->start_cluster_ = 0; // empty
         }
@@ -378,7 +392,7 @@ int main(int argc, char **argv)
 
     printf("Building FAT...\n");
     filesystem::path pdirectory = directory;
-    dir_ent* root = dir_tree(pdirectory);
+    root = dir_tree(pdirectory);
 
     printf("%u out of %u clusters allocated\n", next_cluster-2, data_clusters);
     if (!fat32) {
