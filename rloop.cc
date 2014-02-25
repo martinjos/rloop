@@ -18,7 +18,10 @@
 #include <cerrno>
 #include <cmath>
 #include <string>
+#include <vector>
 
+#include <boost/filesystem.hpp>
+#include <boost/filesystem/path.hpp>
 #include <boost/filesystem/operations.hpp>
 
 using namespace std;
@@ -51,6 +54,7 @@ fstype types[] = {
 uint8_t bootsect[512];
 bool fat32;
 uint8_t cluster_sectors;
+uint32_t cluster_bytes;
 uint16_t res_sectors;
 uint16_t root_dir_ents;
 uint32_t root_dir_size;
@@ -63,6 +67,27 @@ uint32_t data_sectors;
 uint32_t data_clusters;
 uint32_t root_dir_start_sector;
 uint32_t data_start_sector;
+
+uint32_t next_cluster = 2;
+
+struct file_ent {
+    filesystem::path path_;
+    uint32_t start_cluster_;
+    uint32_t num_clusters_;
+    virtual bool is_root() { return false; }
+    virtual ~file_ent() {}
+};
+
+struct dir_ent : public file_ent {
+    bool is_root_;
+    vector<file_ent *> files_;
+    bool is_root() { return is_root_; }
+    ~dir_ent() {
+        for (size_t i = 0; i < files_.size(); i++) {
+            delete files_[i];
+        }
+    }
+};
 
 static int rloop_getattr(const char *path, struct stat* stbuf)
 {
@@ -135,16 +160,16 @@ static int rloop_read(const char *path, char *buf, size_t size, off_t offset,
         }
 
         if (sector >= data_start_sector) {
-            // data sector
+            // data segment
             memset(buf, 0, chunk_size);
         } else if (sector >= res_sectors && sector < root_dir_start_sector) {
-            // FAT sector
+            // FAT segment
             memset(buf, 0, chunk_size);
         } else if (sector >= root_dir_start_sector) {
-            // root directory sector (FAT16 only)
+            // root directory segment (FAT16 only)
             memset(buf, 0, chunk_size);
         } else {
-            // reserved sector
+            // reserved segment
             if (sector == 0 || sector == 6) {
                 // boot sector
                 memcpy(buf, &bootsect[chunk_offset], chunk_size);
@@ -192,7 +217,9 @@ void setup_params()
         printf("Filesystem is too small for FAT16\n");
         return;
     }
-    printf("%u sectors per cluster\n", cluster_sectors);
+    cluster_bytes = cluster_sectors * 512;
+    printf("%u sectors / %u bytes per cluster\n",
+           cluster_sectors, cluster_bytes);
 
     res_sectors = fat32 ? 32 : 1;
     root_dir_ents = fat32 ? 0 : 512;
@@ -230,6 +257,69 @@ void setup_params()
         *(uint16_t *)&bootsect[48] = htole16(1); // filesystem info sector number
         *(uint16_t *)&bootsect[50] = htole16(6); // backup boot-sector sector
     }
+}
+
+file_ent *build_dir_tree(filesystem::path& file, bool is_root = false)
+{
+    file_ent *ent;
+    if (filesystem::is_directory(file)) {
+        dir_ent *dent = new dir_ent;
+        ent = dent;
+        dent->is_root_ = is_root;
+        filesystem::directory_iterator iter(file), end;
+        for (; iter != end; ++iter) {
+            filesystem::path cpath = iter->path();
+            dent->files_.push_back(build_dir_tree(cpath, false));
+        }
+        uint32_t size = 32 * (dent->files_.size() + (is_root ? 0 : 2));
+        double denom = cluster_bytes;
+        if (is_root) {
+            denom = 512;
+        }
+        ent->num_clusters_ = (uint32_t) ceil(size / denom);
+        //fprintf(stderr, "dir - num_clusters == %u, denom == %g\n", ent->num_clusters_, denom);
+    } else {
+        ent = new file_ent;
+        uintmax_t size = filesystem::file_size(file);
+        ent->num_clusters_ = (uint32_t) ceil((double) size / cluster_bytes);
+        //fprintf(stderr, "file - num_clusters == %u, denom == %u (file size is %llu)\n", ent->num_clusters_, cluster_bytes, size);
+    }
+    //fprintf(stderr, "Got %s\n", file.string().c_str());
+    ent->path_ = file;
+    return ent;
+}
+
+void allocate_fat(file_ent *ent) {
+    if (fat32 || !ent->is_root()) {
+        if (ent->num_clusters_ != 0) {
+            ent->start_cluster_ = next_cluster;
+        } else {
+            ent->start_cluster_ = 0; // empty
+        }
+        next_cluster += ent->num_clusters_;
+        //printf("next_cluster is now %u\n", next_cluster);
+    } else {
+        ent->start_cluster_ = 0; // root dir on FAT16
+    }
+    dir_ent* dent = dynamic_cast<dir_ent *>(ent);
+    if (dent) {
+        for (size_t i = 0; i < dent->files_.size(); i++) {
+            allocate_fat(dent->files_[i]);
+        }
+    }
+}
+
+dir_ent* dir_tree(filesystem::path& file)
+{
+    file_ent* ent = build_dir_tree(file, true);
+    dir_ent* dent = dynamic_cast<dir_ent *>(ent);
+    if (dent) {
+        allocate_fat(dent);
+    } else {
+        fprintf(stderr, "dent == NULL\n");
+        delete ent;
+    }
+    return dent;
 }
 
 int main(int argc, char **argv)
@@ -286,5 +376,19 @@ int main(int argc, char **argv)
 
     setup_params();
 
-    return fuse_main(argc, argv, &rloop_oper, NULL);
+    printf("Building FAT...\n");
+    filesystem::path pdirectory = directory;
+    dir_ent* root = dir_tree(pdirectory);
+
+    printf("%u out of %u clusters allocated\n", next_cluster-2, data_clusters);
+    if (!fat32) {
+        printf("%u out of %u root directory sectors used\n",
+               root->num_clusters_, root_dir_sectors);
+    }
+
+    int result = fuse_main(argc, argv, &rloop_oper, NULL);
+
+    delete root;
+
+    return result;
 }
