@@ -149,6 +149,57 @@ static int rloop_open(const char *path, struct fuse_file_info *fi)
     return 0;
 }
 
+static void read_dir(char *buf, uint16_t chunk_size, uint16_t chunk_offset,
+                     dir_ent *ent, uint32_t sector)
+{
+    uint32_t dir_index = sector * 16 + chunk_offset / 32;
+    char dir[32];
+    while (chunk_size > 0) {
+        if (dir_index < ent->files_.size()) {
+            file_ent *fent = ent->files_[dir_index];
+            memset(dir, 0, sizeof(dir));
+            memset(dir, ' ', 11);
+            string basename = fent->path_.leaf().string();
+            size_t pos = basename.find_last_of('.');
+            string ext = "";
+            if (pos != string::npos) {
+                ext = basename.substr(pos+1, 3);
+                basename = basename.substr(0, pos);
+            }
+            basename = basename.substr(0, 8);
+            basename += ext;
+            memcpy(dir, basename.c_str(), 11);
+            if (dynamic_cast<dir_ent *>(fent)) {
+                dir[11] = 0x10; // ATTR_DIRECTORY
+            }
+            uint32_t first_cluster = htole32(fent->start_cluster_);
+            memcpy(&dir[26], (uint8_t *)&first_cluster, 2); // low word
+            if (fat32) {
+                memcpy(&dir[20], &((uint8_t *)&first_cluster)[2], 2); // high
+            }
+            // FIXME: just an approximate size, for now
+            *(uint32_t *)&dir[28] =
+                htole32(fent->num_clusters_ * cluster_bytes);
+
+            uint16_t dir_offset = chunk_offset % 32;
+            uint16_t dir_size = 32 - dir_offset;
+            if (dir_size > chunk_size) {
+                dir_size = chunk_size;
+            }
+
+            memcpy(buf, &dir[dir_offset], dir_size);
+
+            buf += dir_size;
+            chunk_size -= dir_size;
+            chunk_offset += dir_size;
+            dir_index++;
+        } else {
+            memset(buf, 0, chunk_size);
+            chunk_size = 0;
+        }
+    }
+}
+
 static int rloop_read(const char *path, char *buf, size_t size, off_t offset,
                       struct fuse_file_info *fi)
 {
@@ -174,7 +225,21 @@ static int rloop_read(const char *path, char *buf, size_t size, off_t offset,
 
         if (sector >= data_start_sector) {
             // data segment
-            memset(buf, 0, chunk_size);
+            uint32_t data_sector = sector - data_start_sector;
+            uint32_t data_cluster = data_sector / cluster_sectors;
+            if (data_cluster < fat.size()) {
+                dir_ent *dent = dynamic_cast<dir_ent *>(fat[data_cluster].ent);
+                if (dent) {
+                    // directory
+                    read_dir(buf, chunk_size, chunk_offset, dent,
+                             fat[data_cluster].cluster * cluster_sectors + 
+                             data_sector % cluster_sectors);
+                } else {
+                    memset(buf, 0, chunk_size); // file
+                }
+            } else {
+                memset(buf, 0, chunk_size); // empty cluster
+            }
         } else if (sector >= res_sectors && sector < root_dir_start_sector) {
             // FAT segment
             // N.B. this is 2 FATs in 1, hence the modulo
@@ -214,7 +279,8 @@ static int rloop_read(const char *path, char *buf, size_t size, off_t offset,
             }
         } else if (sector >= root_dir_start_sector) {
             // root directory segment (FAT16 only)
-            memset(buf, 0, chunk_size);
+            read_dir(buf, chunk_size, chunk_offset, root,
+                     sector - root_dir_start_sector);
         } else {
             // reserved segment
             if (sector == 0 || sector == 6) {
@@ -337,7 +403,8 @@ file_ent *build_dir_tree(filesystem::path& file, bool is_root = false)
     return ent;
 }
 
-void allocate_fat(file_ent *ent) {
+void allocate_fat(file_ent *ent)
+{
     if (fat32 || !ent->is_root()) {
         if (ent->num_clusters_ != 0) {
             ent->start_cluster_ = next_cluster;
