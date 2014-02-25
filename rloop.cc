@@ -67,6 +67,7 @@ uint32_t data_sectors;
 uint32_t data_clusters;
 uint32_t root_dir_start_sector;
 uint32_t data_start_sector;
+uint8_t fat_ent_size;
 
 uint32_t next_cluster = 2;
 
@@ -91,9 +92,10 @@ struct dir_ent : public file_ent {
 
 struct fat_ent {
     file_ent *ent;
-    uint32_t sector;
-    fat_ent(file_ent *ent, uint32_t sector)
-    : ent(ent), sector(sector) {
+    uint32_t cluster;
+    bool valid;
+    fat_ent(file_ent *ent, uint32_t cluster)
+    : ent(ent), cluster(cluster), valid(true) {
     }
 };
 
@@ -175,7 +177,40 @@ static int rloop_read(const char *path, char *buf, size_t size, off_t offset,
             memset(buf, 0, chunk_size);
         } else if (sector >= res_sectors && sector < root_dir_start_sector) {
             // FAT segment
-            memset(buf, 0, chunk_size);
+            // N.B. this is 2 FATs in 1, hence the modulo
+            uint32_t fat_sector = (sector - res_sectors) % fat_sectors;
+            uint32_t start_cluster = (fat_sector*512 + chunk_offset)
+                                     / fat_ent_size;
+            uint32_t value = 0;
+            for (uint16_t i = 0; i < chunk_size; ) {
+                if (start_cluster + i < fat.size()) {
+                    fat_ent &fent = fat[start_cluster + i];
+                    if (fent.cluster < fent.ent->num_clusters_ - 1) {
+                        value = 2 + start_cluster + i + 1;
+                    } else if (fent.cluster == fent.ent->num_clusters_ - 1) {
+                        value = fat32 ? 0x0fffffff : 0xffff;
+                    } else {
+                        fprintf(stderr, "Warning: fat_ent has cluster beyond file");
+                        value = 0;
+                    }
+                } else {
+                    value = 0;
+                }
+                uint8_t j = 0;
+                // Nasty...
+                if (fat32) {
+                    uint32_t temp = htole32(value);
+                    for (; j < 4 && i + j < chunk_size; j++) {
+                        buf[i + j] = ((uint8_t *)&temp)[j];
+                    }
+                } else {
+                    uint16_t temp = htole16(value);
+                    for (; j < 2 && i + j < chunk_size; j++) {
+                        buf[i + j] = ((uint8_t *)&temp)[j];
+                    }
+                }
+                i += j; // mustn't forget this
+            }
         } else if (sector >= root_dir_start_sector) {
             // root directory segment (FAT16 only)
             memset(buf, 0, chunk_size);
@@ -239,7 +274,8 @@ void setup_params()
     root_dir_sectors = (uint32_t) ceil(root_dir_size / 512.0);
     free_sectors = num_sectors - res_sectors - root_dir_sectors;
     free_clusters = free_sectors / cluster_sectors;
-    fat_size = (free_clusters + 2) * (fat32 ? 4 : 2);
+    fat_ent_size = fat32 ? 4 : 2;
+    fat_size = (free_clusters + 2) * fat_ent_size;
     fat_sectors = (uint32_t) ceil(fat_size / 512.0);
     data_sectors = free_sectors - 2 * fat_sectors;
     data_clusters = data_sectors / cluster_sectors;
