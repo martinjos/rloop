@@ -1,0 +1,48 @@
+* get directory name, and desired name and size for image file
+* create FAT and other necessary structures
+* implement operations:
+    - getattr
+    - readdir
+    - open
+    - read
+    - write
+
+    - access - check file access permissions (alternative to getattr...)
+    - fgetattr - alternative to getattr - not required (?)
+    - write_buf - alternative to write
+    - read_buf - alternative to read
+
+    - flush - do all writes synchronously
+    - fsync - do all writes synchronously
+    - init - initialize filesystem
+    - destroy - close filesystem
+    - release - not necessary; not allocating data on open()
+    - statfs - filesystem statistics
+    - bmap - only for block devices
+
+    - opendir - N/A
+    - readlink - N/A
+    - mknod - N/A
+    - mkdir - N/A
+    - unlink - N/A
+    - rmdir - N/A
+    - symlink - N/A
+    - rename - N/A
+    - link - N/A
+    - chmod - N/A
+    - chown - N/A
+    - truncate - N/A
+    - setxattr - N/A
+    - getxattr - N/A
+    - listxattr - N/A
+    - removexattr - N/A
+    - releasedir - N/A
+    - fsyncdir - N/A
+    - create - N/A
+    - ftruncate - N/A
+    - lock - N/A
+    - utimens - N/A
+    - ioctl - N/A
+    - poll - N/A
+    - flock - N/A
+    - fallocate - N/A
