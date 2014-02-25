@@ -1,5 +1,5 @@
 /**
- * Reverse loopback device - presents a directory as a disk image.
+ * Reverse loopback device - presents a directory as a FAT16/32 disk image.
  */
 
 #define _BSD_SOURCE
@@ -25,7 +25,7 @@ using namespace std;
 using namespace boost;
 
 string directory = "";
-string image_filename = "disk.img";
+string image_filename = "/disk.img";
 uint64_t image_size = 0;
 int64_t num_sectors = 0;
 
@@ -61,26 +61,59 @@ uint32_t fat_size;
 uint32_t fat_sectors;
 uint32_t data_sectors;
 uint32_t data_clusters;
+uint32_t data_start_sector;
 
 static int rloop_getattr(const char *path, struct stat* stbuf)
 {
-    return -ENOSYS;
+    int res = 0;
+
+    memset(stbuf, 0, sizeof(*stbuf));
+
+    if (0 == strcmp(path, "/")) {
+        stbuf->st_mode = S_IFDIR | 0555;
+        stbuf->st_nlink = 2;
+    } else if (0 == strcmp(path, image_filename.c_str())) {
+        stbuf->st_mode = S_IFREG | 0444;
+        stbuf->st_nlink = 1;
+        stbuf->st_size = image_size;
+    } else {
+        res = -ENOENT;
+    }
+
+    return res;
 }
 
 static int rloop_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
                          off_t offset, struct fuse_file_info *fi)
 {
-    return -ENOSYS;
+    if (0 != strcmp(path, "/")) {
+        return -ENOENT;
+    }
+
+    filler(buf, ".", NULL, 0);
+    filler(buf, "..", NULL, 0);
+    filler(buf, image_filename.c_str() + 1, NULL, 0);
+
+    return 0;
 }
 
 static int rloop_open(const char *path, struct fuse_file_info *fi)
 {
-    return -ENOSYS;
+    if (0 != strcmp(path, image_filename.c_str())) {
+        return -ENOENT;
+    }
+
+    if ((fi->flags & 3) != O_RDONLY) {
+        return -EACCES;
+    }
+
+    return 0;
 }
 
 static int rloop_read(const char *path, char *buf, size_t size, off_t offset,
                       struct fuse_file_info *fi)
 {
+    uint32_t sector = offset / 512;
     return -ENOSYS;
 }
 
@@ -127,6 +160,8 @@ void setup_params()
     data_sectors = free_sectors - 2 * fat_sectors;
     data_clusters = data_sectors / cluster_sectors;
 
+    data_start_sector = res_sectors + 2 * fat_sectors + root_dir_sectors;
+
     printf("FAT%d, %u reserved sectors, %u sectors per FAT (%u entries), %u sectors for root directory, %llu sectors total\n", fat32 ? 32 : 16, res_sectors, fat_sectors, free_clusters, root_dir_sectors, num_sectors);
     printf("%u data sectors, %u data clusters\n", data_sectors, data_clusters);
 
@@ -168,7 +203,8 @@ int main(int argc, char **argv)
         if (ch == 'D') {
             directory = optarg;
         } else if (ch == 'n') {
-            image_filename = optarg;
+            image_filename = "/";
+            image_filename += optarg;
         } else if (ch == 'S') {
             char *endptr = NULL;
             image_size = strtoull(optarg, &endptr, 10);
@@ -203,6 +239,5 @@ int main(int argc, char **argv)
 
     setup_params();
 
-    //return fuse_main(argc, argv, &rloop_oper, NULL);
-    return 0;
+    return fuse_main(argc, argv, &rloop_oper, NULL);
 }
