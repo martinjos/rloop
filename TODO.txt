@@ -1,4 +1,4 @@
-* get directory name, and desired name and size for image file
+* get directory name (-D), and desired name (-n) and size (-S) for image file
 * create FAT and other necessary structures
 * implement operations:
     - getattr
