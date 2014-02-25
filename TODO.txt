@@ -1,5 +1,12 @@
 * get directory name (-D), and desired name (-n) and size (-S) for image file
+
 * create FAT and other necessary structures
+    - Reserved Region - some number (typically 32) of (typically) 512-byte sectors (no point in using higher, because even at 512 the max cluster size can be reached by setting sectors-per-cluster)
+        - BPB (BIOS Parameter Block) - in first sector
+    - FAT Region (num-fats * fat-size clusters)
+    - File and Directory Data Region - first cluster (of size sectors-per-cluster clusters) is known as cluster 2 and starts immediately after the 2nd FAT
+    - Must use FAT16 if less than 512 MB and FAT32 if greater than 512 MB (actually, this is supposed to be dependent on the number of clusters...)
+
 * implement operations:
     - getattr
     - readdir
